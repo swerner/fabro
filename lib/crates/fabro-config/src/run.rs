@@ -137,6 +137,11 @@ fn process_env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "goal text intentionally passes through in source form; goals become importable \
+              templates in the interpolation unification (Phase 3)"
+)]
 fn resolve_layer_goal(
     goal: &RunGoalLayer,
     base_dir: &Path,
@@ -150,6 +155,11 @@ fn resolve_layer_goal(
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "goal text intentionally passes through in source form; goals become importable \
+              templates in the interpolation unification (Phase 3)"
+)]
 fn resolve_goal(
     goal: &RunGoal,
     base_dir: &Path,
@@ -170,6 +180,10 @@ mod tests {
     use super::*;
     use crate::RunGoalLayer;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test asserts the raw template source"
+    )]
     #[test]
     fn load_run_config_rewrites_relative_goal_file_path() {
         let tmp = tempfile::tempdir().unwrap();
@@ -196,6 +210,10 @@ file = "prompts/goal.md"
         assert_eq!(file.as_source(), expected.to_string_lossy());
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test asserts the raw template source"
+    )]
     #[test]
     fn load_run_config_leaves_absolute_goal_file_untouched() {
         let tmp = tempfile::tempdir().unwrap();

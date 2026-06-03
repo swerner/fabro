@@ -32,6 +32,10 @@ a = "higher"
     assert!(!inputs.contains_key("b"), "lower key should be gone");
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test asserts the raw template source"
+)]
 #[test]
 fn run_environment_env_merges_sticky() {
     let lower = parse(
@@ -110,6 +114,10 @@ fallbacks = ["anthropic", "..."]
     assert_eq!(fallbacks.len(), 3);
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test asserts the raw template source"
+)]
 #[test]
 fn hooks_replace_by_id() {
     let lower = parse(
@@ -141,6 +149,10 @@ script = "higher-script"
     );
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test asserts the raw template source"
+)]
 #[test]
 fn anonymous_hooks_append_after_merged_inherited() {
     let lower = parse(
@@ -292,6 +304,10 @@ destination = "stdout"
     assert_eq!(logging.destination, Some(LogDestination::Stdout));
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test asserts the raw template source"
+)]
 #[test]
 fn whole_replace_option_subtable_does_not_inherit_fallback_fields() {
     let lower = parse(

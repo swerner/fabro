@@ -14,7 +14,7 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
 use super::duration::Duration;
-use super::interp::{InterpString, ResolveEnvError};
+use super::interp::{InterpString, Namespace, ResolveError};
 use super::model_ref::ModelRef;
 use super::size::Size;
 
@@ -77,7 +77,7 @@ impl Default for RunNamespace {
 }
 
 impl RunNamespace {
-    pub fn substitute_variables<F>(&mut self, mut lookup: F) -> Result<(), ResolveEnvError>
+    pub fn substitute_variables<F>(&mut self, mut lookup: F) -> Result<(), ResolveError>
     where
         F: FnMut(&str) -> Option<String>,
     {
@@ -128,7 +128,7 @@ impl RunNamespace {
     }
 }
 
-fn substitute_goal<F>(goal: &mut Option<RunGoal>, lookup: &mut F) -> Result<(), ResolveEnvError>
+fn substitute_goal<F>(goal: &mut Option<RunGoal>, lookup: &mut F) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -141,7 +141,7 @@ where
 fn substitute_option<F>(
     value: &mut Option<InterpString>,
     lookup: &mut F,
-) -> Result<(), ResolveEnvError>
+) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -154,7 +154,7 @@ where
 fn substitute_map<F>(
     values: &mut HashMap<String, InterpString>,
     lookup: &mut F,
-) -> Result<(), ResolveEnvError>
+) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -164,27 +164,26 @@ where
     Ok(())
 }
 
-fn substitute<F>(value: &mut InterpString, lookup: &mut F) -> Result<(), ResolveEnvError>
+fn substitute<F>(value: &mut InterpString, lookup: &mut F) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
-    if !value.references_vars() {
+    if !value.references(Namespace::Vars) {
         return Ok(());
     }
     *value = value.substitute_variables(lookup)?;
     Ok(())
 }
 
-fn substitute_string<F>(value: &mut String, lookup: &mut F) -> Result<(), ResolveEnvError>
+fn substitute_string<F>(value: &mut String, lookup: &mut F) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
     if !may_reference_variable(value) {
         return Ok(());
     }
-    let parsed = InterpString::parse(value);
-    if parsed.references_vars() {
-        *value = parsed.substitute_variables(lookup)?.as_source();
+    if InterpString::parse(value).references(Namespace::Vars) {
+        *value = InterpString::substitute_variables_in_str(value, lookup)?;
     }
     Ok(())
 }
@@ -196,7 +195,7 @@ fn may_reference_variable(value: &str) -> bool {
 fn substitute_option_string<F>(
     value: &mut Option<String>,
     lookup: &mut F,
-) -> Result<(), ResolveEnvError>
+) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -206,7 +205,7 @@ where
     }
 }
 
-fn substitute_string_vec<F>(values: &mut [String], lookup: &mut F) -> Result<(), ResolveEnvError>
+fn substitute_string_vec<F>(values: &mut [String], lookup: &mut F) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -219,7 +218,7 @@ where
 fn substitute_string_map<F>(
     values: &mut HashMap<String, String>,
     lookup: &mut F,
-) -> Result<(), ResolveEnvError>
+) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -232,7 +231,7 @@ where
 fn substitute_mcp_transport<F>(
     transport: &mut McpTransport,
     lookup: &mut F,
-) -> Result<(), ResolveEnvError>
+) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -251,7 +250,7 @@ where
 fn substitute_environment<F>(
     environment: &mut RunEnvironmentSettings,
     lookup: &mut F,
-) -> Result<(), ResolveEnvError>
+) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -271,7 +270,7 @@ where
 fn substitute_dockerfile_source<F>(
     source: &mut Option<DockerfileSource>,
     lookup: &mut F,
-) -> Result<(), ResolveEnvError>
+) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -283,7 +282,7 @@ where
     }
 }
 
-fn substitute_hook_type<F>(hook_type: &mut HookType, lookup: &mut F) -> Result<(), ResolveEnvError>
+fn substitute_hook_type<F>(hook_type: &mut HookType, lookup: &mut F) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -314,6 +313,10 @@ mod run_namespace_variable_substitution_tests {
         RunEnvironmentSettings, RunGoal, RunNamespace, RunPrepareSettings,
     };
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test asserts the raw template source"
+    )]
     #[test]
     fn substitutes_variables_in_interp_and_late_bound_run_strings() {
         let mut run = RunNamespace {
@@ -505,6 +508,12 @@ impl RunIntegrationsGithubSettings {
     /// of a silently dropped key. The `lookup` seam keeps tests free of
     /// process-env coupling; production callers pass a thin wrapper over
     /// `std::env::var`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "intentional raw-source fallback so a missing env var surfaces as a \
+                  recognizable diagnostic; slated for hard-error semantics in the \
+                  interpolation unification (D3)"
+    )]
     pub fn resolve_permissions<F>(&self, mut lookup: F) -> HashMap<String, String>
     where
         F: FnMut(&str) -> Option<String>,
@@ -869,6 +878,12 @@ impl RunEnvironmentSettings {
     /// Resolve every environment value's `{{ env.* }}` tokens via `lookup`,
     /// falling back to the original source string when resolution fails.
     #[must_use]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "intentional raw-source fallback so a missing env var surfaces as a \
+                  recognizable diagnostic; slated for hard-error semantics in the \
+                  interpolation unification (D3)"
+    )]
     pub fn resolve_env<F>(&self, mut lookup: F) -> HashMap<String, String>
     where
         F: FnMut(&str) -> Option<String>,

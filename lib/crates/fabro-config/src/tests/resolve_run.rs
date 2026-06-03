@@ -70,6 +70,10 @@ fn resolves_run_defaults_from_empty_settings() {
     assert!(settings.pull_request.is_none());
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test asserts the raw template source"
+)]
 #[test]
 fn resolves_named_daytona_environment_and_run_overrides() {
     let settings = WorkflowSettingsBuilder::from_toml(
@@ -725,6 +729,10 @@ issues = "read"
         );
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test asserts the raw template source"
+    )]
     #[test]
     fn resolver_preserves_interp_string_in_permissions() {
         let resolved = WorkflowSettingsBuilder::from_toml(

@@ -128,6 +128,10 @@ mod tests {
         assert!(err.to_string().contains("mutually exclusive"));
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test asserts the raw template source"
+    )]
     #[test]
     fn goal_file_is_anchored_at_cwd_when_relative() {
         let layer =
@@ -140,6 +144,10 @@ mod tests {
         assert_eq!(file.as_source(), "/cwd/prompts/goal.md");
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test asserts the raw template source"
+    )]
     #[test]
     fn absolute_goal_file_is_preserved() {
         let layer = goal_layer_from_args(None, Some(Path::new("/abs/goal.md")), Path::new("/cwd"))

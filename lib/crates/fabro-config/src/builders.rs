@@ -665,6 +665,10 @@ command = ["demo-mcp"]
         assert!(settings.agent.mcps.contains_key("demo"));
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test asserts the raw template source"
+    )]
     #[test]
     fn workflow_builder_preserves_run_overrides_when_cli_overrides_are_added() {
         let settings = WorkflowSettingsBuilder::new()

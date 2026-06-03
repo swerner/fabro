@@ -39,6 +39,7 @@ use tokio::process::Command;
 use tokio::time;
 use tracing::warn;
 
+use crate::interp::process_env_var;
 use crate::server::AppState;
 use crate::server_secrets::LlmClientResult;
 
@@ -379,6 +380,12 @@ fn manifest_args_overrides(
     })
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "known leak: run.working_dir is a path kept as InterpString (not demoted); it should \
+              resolve {{ env.* }}/{{ vars.* }} tokens but consumes them raw today; strict \
+              resolution scheduled in the interpolation unification (Phase 2 keep-rows)"
+)]
 fn resolve_working_directory(settings: &WorkflowSettings, caller_cwd: &Path) -> PathBuf {
     let Some(work_dir) = settings
         .run
@@ -394,14 +401,6 @@ fn resolve_working_directory(settings: &WorkflowSettings, caller_cwd: &Path) -> 
     } else {
         caller_cwd.join(path)
     }
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Manifest preflight interpolation owns a process-env lookup facade for {{ env.* }} values."
-)]
-fn process_env_var(name: &str) -> Option<String> {
-    std::env::var(name).ok()
 }
 
 fn resolve_manifest_dockerfiles(
@@ -1171,6 +1170,11 @@ fn canonical_provider_id(catalog: &Catalog, provider_name: &str) -> ProviderId {
         .map_or(provider_id, |provider| provider.id.clone())
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "raw source is today's behavior; run.model.name/provider are slated for demotion to plain String in the \
+              interpolation unification (D2)"
+)]
 fn resolve_model_provider(
     settings: &RunNamespace,
     _graph: &Graph,
