@@ -630,7 +630,9 @@ fn resolve_daytona_config(settings: &RunNamespace) -> DaytonaConfig {
     daytona_config_from_environment(&settings.environment, !settings.clone.enabled)
 }
 
-fn resolve_docker_config(settings: &RunNamespace) -> DockerSandboxOptions {
+fn resolve_docker_config(
+    settings: &RunNamespace,
+) -> std::result::Result<DockerSandboxOptions, fabro_sandbox::Error> {
     docker_config_from_environment(&settings.environment, !settings.clone.enabled)
 }
 
@@ -873,7 +875,7 @@ fn preflight_sandbox_spec(
             SandboxSpec::Local { working_directory }
         }
         SandboxProviderKind::Docker => {
-            let mut config = resolve_docker_config(resolved_run);
+            let mut config = resolve_docker_config(resolved_run)?;
             config.skip_clone = true;
             SandboxSpec::Docker {
                 config,
@@ -1178,10 +1180,23 @@ async fn run_github_token_check(
 
     // Resolve InterpString permission values eagerly for token minting and
     // for display in the preflight report.
-    let github_permissions = resolved_run
+    let github_permissions = match resolved_run
         .integrations
         .github
-        .resolve_permissions(process_env_var);
+        .resolve_permissions(process_env_var)
+    {
+        Ok(permissions) => permissions,
+        Err(err) => {
+            checks.push(CheckResult {
+                name:        "GitHub Token".into(),
+                status:      CheckStatus::Error,
+                summary:     "invalid permissions".into(),
+                details:     vec![],
+                remediation: Some(format!("Failed to resolve GitHub token permissions: {err}")),
+            });
+            return;
+        }
+    };
 
     let perm_details = github_permissions
         .iter()

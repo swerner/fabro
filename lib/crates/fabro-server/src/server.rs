@@ -3962,13 +3962,27 @@ async fn execute_run_in_process(state: Arc<AppState>, run_id: RunId) {
             return;
         }
     };
-    let github_permissions = persisted
+    let github_permissions = match persisted
         .run_spec()
         .settings
         .run
         .integrations
         .github
-        .resolve_permissions(process_env_var);
+        .resolve_permissions(process_env_var)
+    {
+        Ok(permissions) => permissions,
+        Err(e) => {
+            tracing::error!(run_id = %run_id, error = %e, "Invalid GitHub token permissions");
+            fail_run_before_execution(
+                &state,
+                run_id,
+                FailureReason::WorkflowError,
+                format!("Invalid GitHub token permissions: {e}"),
+            )
+            .await;
+            return;
+        }
+    };
     let services = operations::StartServices {
         run_id,
         cancel_token: cancel_token.clone(),

@@ -170,7 +170,8 @@ pub(crate) async fn execute(
             .run
             .integrations
             .github
-            .resolve_permissions(process_env_var),
+            .resolve_permissions(process_env_var)
+            .context("failed to resolve GitHub token permissions")?,
         vault,
         catalog,
         on_node: None,

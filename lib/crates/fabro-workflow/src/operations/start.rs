@@ -397,7 +397,7 @@ impl RunSession {
                 SandboxSpec::Local { working_directory }
             }
             SandboxProviderKind::Docker => SandboxSpec::Docker {
-                config:           resolve_docker_config(resolved),
+                config:           resolve_docker_config(resolved)?,
                 github_app:       services.github_app.clone(),
                 run_id:           Some(record.run_id),
                 clone_origin_url: record.repo_origin_url().map(str::to_string),
@@ -423,7 +423,10 @@ impl RunSession {
             }
         };
 
-        let toml_env = resolved.environment.resolve_env(process_env_var);
+        let toml_env = resolved
+            .environment
+            .resolve_env(process_env_var)
+            .map_err(|err| Error::engine_with_source("Failed to resolve run environment", err))?;
         let github_permissions: Option<HashMap<String, String>> =
             (!services.github_permissions.is_empty()).then(|| services.github_permissions.clone());
         let sandbox_env = SandboxEnvSpec {
@@ -562,8 +565,9 @@ fn resolve_daytona_config(settings: &ResolvedRunSettings) -> DaytonaConfig {
     daytona_config_from_environment(&settings.environment, !settings.clone.enabled)
 }
 
-fn resolve_docker_config(settings: &ResolvedRunSettings) -> DockerSandboxOptions {
+fn resolve_docker_config(settings: &ResolvedRunSettings) -> Result<DockerSandboxOptions, Error> {
     docker_config_from_environment(&settings.environment, !settings.clone.enabled)
+        .map_err(|err| Error::engine_with_source("Failed to resolve Docker environment", err))
 }
 
 fn resolve_start_llm(
@@ -1318,7 +1322,7 @@ reasoning = false
             ..RunLayer::default()
         });
 
-        assert!(resolve_docker_config(&settings.run).skip_clone);
+        assert!(resolve_docker_config(&settings.run).unwrap().skip_clone);
         assert!(resolve_daytona_config(&settings.run).skip_clone);
     }
 
@@ -1348,7 +1352,7 @@ reasoning = false
             ..RunLayer::default()
         });
 
-        let config = resolve_docker_config(&settings.run);
+        let config = resolve_docker_config(&settings.run).unwrap();
 
         assert_eq!(config.image, "ubuntu:24.04");
         assert_eq!(config.cpu_quota, Some(400_000));

@@ -2,10 +2,10 @@
 //!
 //! An [`InterpString`] field may contain narrow `{{ <namespace>.NAME }}`
 //! tokens — no template logic. Three [`Namespace`]s resolve here: `env`,
-//! `vars`, and `secrets`. `inputs` is **template-only** (D12): it is a
-//! recognized namespace so an `{{ inputs.* }}` token fails loudly with a clear
-//! message instead of passing through as literal text, but it never resolves
-//! in an `InterpString` field — it belongs in prompts and goals. Which of the
+//! `vars`, and `secrets`. `inputs` is template-only: it is a recognized
+//! namespace so an `{{ inputs.* }}` token fails loudly with a clear message
+//! instead of passing through as literal text, but it never resolves in an
+//! `InterpString` field — it belongs in prompts and goals. Which of the
 //! resolvable namespaces actually apply is scope-determined by the caller
 //! through [`ResolveCtx`]: server-scope settings provide `env` (and eventually
 //! `secrets`), run-scope settings additionally provide `vars`. A token whose
@@ -53,7 +53,8 @@ pub enum Namespace {
     Vars,
     /// `{{ secrets.NAME }}` — vault secrets, resolved at consumption time.
     Secrets,
-    /// `{{ inputs.NAME }}` — workflow run inputs, substituted early.
+    /// `{{ inputs.NAME }}` — workflow run inputs, recognized here for clear
+    /// rejection and preserved source, but rendered only by templates.
     Inputs,
 }
 
@@ -149,10 +150,9 @@ impl<'a> ResolveCtx<'a> {
             Namespace::Env => self.env.as_mut(),
             Namespace::Vars => self.vars.as_mut(),
             Namespace::Secrets => self.secrets.as_mut(),
-            // `inputs` is template-only (D12): an `InterpString` resolve context
-            // never provides it, so an `{{ inputs.* }}` token is always
-            // unavailable here. `substitute_with` still preserves the token so a
-            // goal (an `InterpString` that feeds a template) can forward it.
+            // `inputs` is template-only: a resolve context never provides it.
+            // `substitute_with` still preserves the token so goals can forward
+            // it to the template renderer.
             Namespace::Inputs => None,
         }
     }
@@ -248,6 +248,21 @@ impl InterpString {
             .collect()
     }
 
+    pub(crate) fn reject_references_to(&self, namespace: Namespace) -> Result<(), ResolveError> {
+        for seg in &self.segments {
+            match seg {
+                Segment::Token {
+                    namespace: token_namespace,
+                    name,
+                } if *token_namespace == namespace => {
+                    return Err(ResolveError::unavailable(namespace, name));
+                }
+                Segment::Literal(_) | Segment::Token { .. } => {}
+            }
+        }
+        Ok(())
+    }
+
     /// The raw, unresolved template source.
     ///
     /// This is a footgun for consumers: passing the raw source downstream
@@ -317,9 +332,11 @@ impl InterpString {
     /// for the namespaces it does not — their resolution happens later,
     /// possibly in a different process.
     ///
-    /// This is the early, server-side pass (`vars`/`inputs`); late-bound
-    /// namespaces (`env`/`secrets`) survive in token form for their
-    /// consumption-time [`InterpString::resolve_with`].
+    /// This is the early, server-side pass for namespaces such as `vars`.
+    /// Late-bound namespaces (`env`/`secrets`) survive in token form for their
+    /// consumption-time [`InterpString::resolve_with`]. Template-only
+    /// namespaces such as `inputs` are also preserved so prompt and goal
+    /// templates can render them.
     pub fn substitute_with(&self, ctx: &mut ResolveCtx<'_>) -> Result<Self, ResolveError> {
         let mut segments = Vec::new();
         for seg in &self.segments {
@@ -360,8 +377,7 @@ impl InterpString {
     #[expect(
         clippy::disallowed_methods,
         reason = "intentional raw-source fallback so a missing env var surfaces as a \
-                  recognizable diagnostic; slated for hard-error semantics in the \
-                  interpolation unification (D3)"
+                  recognizable diagnostic"
     )]
     #[must_use]
     pub fn resolve_or_source<F>(&self, lookup: F) -> String
@@ -370,6 +386,28 @@ impl InterpString {
     {
         self.resolve(lookup)
             .map_or_else(|_| self.as_source(), |resolved| resolved.value)
+    }
+
+    /// Resolve in an env-only context, falling back to the raw template
+    /// source only for missing `env` values. Unsupported namespaces still
+    /// return a structured error.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "intentional raw-source fallback for missing env diagnostics"
+    )]
+    pub fn try_resolve_or_source<F>(&self, lookup: F) -> Result<String, ResolveError>
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        match self.resolve(lookup) {
+            Ok(resolved) => Ok(resolved.value),
+            Err(err)
+                if err.namespace == Namespace::Env && err.kind == ResolveErrorKind::Missing =>
+            {
+                Ok(self.as_source())
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Substitute only `{{ vars.* }}` tokens while preserving all other
@@ -440,7 +478,8 @@ pub enum Provenance {
     Literal,
     /// One or more env vars and/or secrets contributed to this value. Used by
     /// outward-facing renderers to redact sensitive-sourced values uniformly.
-    /// `vars`/`inputs` are non-sensitive and do not mark a value as sourced.
+    /// `vars` are non-sensitive and do not mark a value as sourced; `inputs`
+    /// are template-only and do not resolve here.
     Sourced {
         env_names:    Vec<String>,
         secret_names: Vec<String>,
@@ -506,12 +545,10 @@ impl fmt::Display for ResolveError {
                 self.name, self.name
             ),
             ResolveErrorKind::Unavailable => match namespace {
-                // `inputs` is template-only (D12): it never resolves in an
-                // `InterpString` field. Point the user at where it works.
                 Namespace::Inputs => write!(
                     f,
-                    "{{{{ inputs.{} }}}} is only available in prompts and goals, not in other \
-                     config fields",
+                    "{{{{ {namespace}.{} }}}} is only available in prompts and goals, not in \
+                     other config fields",
                     self.name
                 ),
                 _ => write!(
@@ -816,19 +853,16 @@ mod tests {
 
     #[test]
     fn resolve_with_rejects_inputs_as_template_only() {
-        // D12: `inputs` is template-only. An `{{ inputs.* }}` token never
-        // resolves in an `InterpString` field — it fails loudly, pointing the
-        // user at prompts and goals.
         let s = InterpString::parse("run-{{ inputs.ticket-id }}");
 
         let err = s.resolve_with(&mut ResolveCtx::new()).unwrap_err();
 
         assert_eq!(err.namespace, Namespace::Inputs);
         assert_eq!(err.kind, ResolveErrorKind::Unavailable);
-        assert!(
-            err.to_string()
-                .contains("only available in prompts and goals"),
-            "unexpected message: {err}"
+        assert_eq!(
+            err.to_string(),
+            "{{ inputs.ticket-id }} is only available in prompts and goals, not in other config \
+             fields"
         );
     }
 

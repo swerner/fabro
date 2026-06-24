@@ -65,20 +65,22 @@ pub fn daytona_config_from_environment(
 }
 
 #[cfg(feature = "docker")]
-#[must_use]
 pub fn docker_config_from_environment(
     settings: &RunEnvironmentSettings,
     skip_clone: bool,
-) -> DockerSandboxOptions {
+) -> crate::Result<DockerSandboxOptions> {
     let mut env_vars = settings
         .resolve_env(process_env_var)
+        .map_err(|err| {
+            crate::Error::context("Failed to resolve Docker environment variables", err)
+        })?
         .into_iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>();
     env_vars.sort();
     let default_options = DockerSandboxOptions::default();
 
-    DockerSandboxOptions {
+    Ok(DockerSandboxOptions {
         image: settings
             .image
             .docker
@@ -101,7 +103,7 @@ pub fn docker_config_from_environment(
         env_vars,
         skip_clone,
         ..DockerSandboxOptions::default()
-    }
+    })
 }
 
 pub fn local_working_directory_from_environment(

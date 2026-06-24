@@ -83,9 +83,8 @@ impl RunNamespace {
     {
         substitute_goal(&mut self.goal, &mut lookup)?;
         substitute_string_map(&mut self.metadata, &mut lookup)?;
-        // run.working_dir, run.model.provider/name, and run.git.author.* were
-        // demoted to plain `String` and removed from this pass (D2/D11):
-        // values stay literal.
+        // These fields are plain `String` values, so interpolation markers
+        // stay literal.
         substitute_option_string(&mut self.model.controls.reasoning_effort, &mut lookup)?;
         substitute_option_string(&mut self.model.controls.speed, &mut lookup)?;
         substitute_string_vec(&mut self.checkpoint.exclude_globs, &mut lookup)?;
@@ -103,8 +102,8 @@ impl RunNamespace {
             substitute_option(&mut slack.channel, &mut lookup)?;
         }
         substitute_map(&mut self.integrations.github.permissions, &mut lookup)?;
-        // run.scm.owner/repository were demoted and removed from this pass
-        // (D2): values stay literal.
+        // run.scm.owner/repository are plain `String` values, so
+        // interpolation markers stay literal.
         substitute_string_vec(&mut self.prepare.commands, &mut lookup)?;
         for mcp in self.agent.mcps.values_mut() {
             substitute_string(&mut mcp.name, &mut lookup)?;
@@ -129,7 +128,7 @@ where
     F: FnMut(&str) -> Option<String>,
 {
     match goal {
-        Some(RunGoal::Inline(value) | RunGoal::File(value)) => substitute(value, lookup),
+        Some(RunGoal::Inline(value) | RunGoal::File(value)) => substitute_template(value, lookup),
         None => Ok(()),
     }
 }
@@ -161,6 +160,14 @@ where
 }
 
 fn substitute<F>(value: &mut InterpString, lookup: &mut F) -> Result<(), ResolveError>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    value.reject_references_to(Namespace::Inputs)?;
+    substitute_template(value, lookup)
+}
+
+fn substitute_template<F>(value: &mut InterpString, lookup: &mut F) -> Result<(), ResolveError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -299,10 +306,11 @@ where
 mod run_namespace_variable_substitution_tests {
     use std::collections::HashMap;
 
+    use super::super::ResolveErrorKind;
     use super::{
         ArtifactsSettings, DockerfileSource, EnvironmentImageSettings, EnvironmentNetworkMode,
         EnvironmentNetworkSettings, HookDefinition, HookEvent, HookType, InterpString,
-        McpHttpProtocol, McpServerSettings, McpTransport, RunCheckpointSettings,
+        McpHttpProtocol, McpServerSettings, McpTransport, Namespace, RunCheckpointSettings,
         RunEnvironmentSettings, RunGoal, RunNamespace, RunPrepareSettings,
     };
 
@@ -402,10 +410,8 @@ mod run_namespace_variable_substitution_tests {
 
     #[test]
     fn demoted_fields_do_not_interpolate() {
-        // Demoted fields (run.working_dir, run.model.*, run.git.author.*,
-        // run.scm.owner/repository) were removed from the vars pass (D2/D11):
-        // `{{ vars.* }}` and `{{ env.* }}` stay literal even when a value is
-        // available.
+        // Plain `String` fields keep interpolation markers literal even when
+        // a value is available.
         let mut run = RunNamespace {
             working_dir: Some("/workspace/{{ vars.ENV }}".to_string()),
             model: super::RunModelSettings {
@@ -442,6 +448,51 @@ mod run_namespace_variable_substitution_tests {
         assert_eq!(author.email.as_deref(), Some("{{ env.EMAIL }}"));
         assert_eq!(run.scm.owner.as_deref(), Some("{{ vars.OWNER }}"));
         assert_eq!(run.scm.repository.as_deref(), Some("{{ env.REPO }}"));
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test asserts the raw template source"
+    )]
+    #[test]
+    fn goal_preserves_inputs_during_variable_substitution() {
+        let mut run = RunNamespace {
+            goal: Some(RunGoal::Inline(InterpString::parse(
+                "deploy {{ vars.ENV }} for {{ inputs.ticket }}",
+            ))),
+            ..RunNamespace::default()
+        };
+
+        run.substitute_variables(|name| match name {
+            "ENV" => Some("prod".to_string()),
+            _ => None,
+        })
+        .unwrap();
+
+        let source = match run.goal.as_ref() {
+            Some(RunGoal::Inline(value) | RunGoal::File(value)) => value.as_source(),
+            None => String::new(),
+        };
+        assert_eq!(source, "deploy prod for {{ inputs.ticket }}");
+    }
+
+    #[test]
+    fn non_goal_interp_fields_reject_inputs_during_variable_substitution() {
+        let mut run = RunNamespace::default();
+        run.integrations.github.permissions.insert(
+            "issues".to_string(),
+            InterpString::parse("{{ inputs.permission }}"),
+        );
+
+        let err = run.substitute_variables(|_| None).unwrap_err();
+
+        assert_eq!(err.namespace, Namespace::Inputs);
+        assert_eq!(err.kind, ResolveErrorKind::Unavailable);
+        assert_eq!(
+            err.to_string(),
+            "{{ inputs.permission }} is only available in prompts and goals, not in other config \
+             fields"
+        );
     }
 
     #[test]
@@ -524,25 +575,32 @@ impl RunIntegrationsGithubSettings {
     }
 
     /// Resolve every `permissions` value's `{{ env.* }}` tokens via
-    /// `lookup`, falling back to the raw template source when resolution
-    /// fails so callers see a recognizable diagnostic instead of a
-    /// silently dropped key. The `lookup` seam keeps tests free of
-    /// process-env coupling; production callers pass a thin wrapper over
-    /// `std::env::var`.
-    pub fn resolve_permissions<F>(&self, mut lookup: F) -> HashMap<String, String>
+    /// `lookup`, falling back to the raw template source only for missing env
+    /// values. Unsupported namespaces return a structured error. The `lookup`
+    /// seam keeps tests free of process-env coupling; production callers pass
+    /// a thin wrapper over `std::env::var`.
+    pub fn resolve_permissions<F>(
+        &self,
+        mut lookup: F,
+    ) -> Result<HashMap<String, String>, ResolveError>
     where
         F: FnMut(&str) -> Option<String>,
     {
         self.permissions
             .iter()
-            .map(|(name, value)| (name.clone(), value.resolve_or_source(&mut lookup)))
+            .map(|(name, value)| {
+                value
+                    .try_resolve_or_source(&mut lookup)
+                    .map(|resolved| (name.clone(), resolved))
+            })
             .collect()
     }
 }
 
 #[cfg(test)]
 mod run_integrations_github_tests {
-    use super::{HashMap, InterpString, RunIntegrationsGithubSettings};
+    use super::super::ResolveErrorKind;
+    use super::{HashMap, InterpString, Namespace, RunIntegrationsGithubSettings};
 
     fn settings(permissions: &[(&str, &str)]) -> RunIntegrationsGithubSettings {
         RunIntegrationsGithubSettings {
@@ -562,10 +620,12 @@ mod run_integrations_github_tests {
     #[test]
     fn resolve_permissions_substitutes_env_tokens_via_lookup() {
         let s = settings(&[("issues", "{{ env.GH_PERM_LEVEL }}"), ("contents", "read")]);
-        let resolved = s.resolve_permissions(|name| match name {
-            "GH_PERM_LEVEL" => Some("write".to_string()),
-            _ => None,
-        });
+        let resolved = s
+            .resolve_permissions(|name| match name {
+                "GH_PERM_LEVEL" => Some("write".to_string()),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(resolved.get("issues"), Some(&"write".to_string()));
         assert_eq!(resolved.get("contents"), Some(&"read".to_string()));
     }
@@ -573,7 +633,7 @@ mod run_integrations_github_tests {
     #[test]
     fn resolve_permissions_falls_back_to_source_when_lookup_fails() {
         let s = settings(&[("issues", "{{ env.GH_PERM_MISSING }}")]);
-        let resolved = s.resolve_permissions(|_| None);
+        let resolved = s.resolve_permissions(|_| None).unwrap();
         assert_eq!(
             resolved.get("issues"),
             Some(&"{{ env.GH_PERM_MISSING }}".to_string())
@@ -581,8 +641,18 @@ mod run_integrations_github_tests {
     }
 
     #[test]
+    fn resolve_permissions_rejects_inputs_tokens() {
+        let s = settings(&[("issues", "{{ inputs.permission }}")]);
+
+        let err = s.resolve_permissions(|_| None).unwrap_err();
+
+        assert_eq!(err.namespace, Namespace::Inputs);
+        assert_eq!(err.kind, ResolveErrorKind::Unavailable);
+    }
+
+    #[test]
     fn resolve_permissions_is_empty_for_empty_settings() {
-        let s: HashMap<String, String> = settings(&[]).resolve_permissions(|_| None);
+        let s: HashMap<String, String> = settings(&[]).resolve_permissions(|_| None).unwrap();
         assert!(s.is_empty());
     }
 }
@@ -881,15 +951,19 @@ impl RunEnvironmentSettings {
     }
 
     /// Resolve every environment value's `{{ env.* }}` tokens via `lookup`,
-    /// falling back to the original source string when resolution fails.
-    #[must_use]
-    pub fn resolve_env<F>(&self, mut lookup: F) -> HashMap<String, String>
+    /// falling back to the original source string only for missing env values.
+    /// Unsupported namespaces return a structured error.
+    pub fn resolve_env<F>(&self, mut lookup: F) -> Result<HashMap<String, String>, ResolveError>
     where
         F: FnMut(&str) -> Option<String>,
     {
         self.env
             .iter()
-            .map(|(name, value)| (name.clone(), value.resolve_or_source(&mut lookup)))
+            .map(|(name, value)| {
+                value
+                    .try_resolve_or_source(&mut lookup)
+                    .map(|resolved| (name.clone(), resolved))
+            })
             .collect()
     }
 }
@@ -902,7 +976,8 @@ impl Default for RunEnvironmentSettings {
 
 #[cfg(test)]
 mod run_environment_settings_tests {
-    use super::{HashMap, InterpString, RunEnvironmentSettings};
+    use super::super::ResolveErrorKind;
+    use super::{HashMap, InterpString, Namespace, RunEnvironmentSettings};
 
     fn settings(env: &[(&str, &str)]) -> RunEnvironmentSettings {
         RunEnvironmentSettings {
@@ -917,10 +992,12 @@ mod run_environment_settings_tests {
     #[test]
     fn resolve_env_substitutes_env_tokens_via_lookup() {
         let s = settings(&[("NODE_ENV", "{{ env.NODE_ENV }}"), ("STATIC", "value")]);
-        let resolved = s.resolve_env(|name| match name {
-            "NODE_ENV" => Some("test".to_string()),
-            _ => None,
-        });
+        let resolved = s
+            .resolve_env(|name| match name {
+                "NODE_ENV" => Some("test".to_string()),
+                _ => None,
+            })
+            .unwrap();
 
         assert_eq!(resolved.get("NODE_ENV"), Some(&"test".to_string()));
         assert_eq!(resolved.get("STATIC"), Some(&"value".to_string()));
@@ -929,7 +1006,7 @@ mod run_environment_settings_tests {
     #[test]
     fn resolve_env_falls_back_to_source_when_lookup_fails() {
         let s = settings(&[("NODE_ENV", "{{ env.MISSING_NODE_ENV }}")]);
-        let resolved = s.resolve_env(|_| None);
+        let resolved = s.resolve_env(|_| None).unwrap();
 
         assert_eq!(
             resolved.get("NODE_ENV"),
@@ -938,8 +1015,18 @@ mod run_environment_settings_tests {
     }
 
     #[test]
+    fn resolve_env_rejects_inputs_tokens() {
+        let s = settings(&[("NODE_ENV", "{{ inputs.node_env }}")]);
+
+        let err = s.resolve_env(|_| None).unwrap_err();
+
+        assert_eq!(err.namespace, Namespace::Inputs);
+        assert_eq!(err.kind, ResolveErrorKind::Unavailable);
+    }
+
+    #[test]
     fn resolve_env_is_empty_for_empty_settings() {
-        let s: HashMap<String, String> = settings(&[]).resolve_env(|_| None);
+        let s: HashMap<String, String> = settings(&[]).resolve_env(|_| None).unwrap();
         assert!(s.is_empty());
     }
 }
