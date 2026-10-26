@@ -19,7 +19,7 @@ macOS note: if `cargo nextest run` fails with `Too many open files (os error 24)
 
 ### TypeScript (fabro-web)
 - `cd apps/fabro-web && bun run dev` — rebuild web assets on change for the Rust server; refresh the browser manually
-- `cd apps/fabro-web && bun test` — run tests
+- `cd apps/fabro-web && bun run test` — run tests (the package script enables `--isolate`)
 - `cd apps/fabro-web && bun run typecheck` — type check
 - `cd apps/fabro-web && bun run build` — production build (writes to `apps/fabro-web/dist/` only; does NOT update the bundled SPA that ships in the Rust binary)
 - `cargo dev build [-- <cargo args>]` — refreshes the embedded SPA assets from the production build, verifies SPA asset budgets, and then runs `cargo build` with forwarded args. The embedded assets are gitignored except for `.gitkeep`; use this when building a Rust binary that should include a populated SPA bundle. `bun run dev` for local development is unchanged because debug builds prefer `apps/fabro-web/dist/` on disk via the server fallback.
@@ -143,7 +143,7 @@ Fabro is an AI-powered workflow orchestration platform. Workflows are defined as
 
 ### TypeScript (fabro-web)
 - `cd apps/fabro-web && bun run dev` — rebuild web assets on change for the Rust server; refresh the browser manually
-- `cd apps/fabro-web && bun test` — run tests
+- `cd apps/fabro-web && bun run test` — run tests (the package script enables `--isolate`)
 - `cd apps/fabro-web && bun run typecheck` — type check
 - `cd apps/fabro-web && bun run build` — production build (writes to `apps/fabro-web/dist/` only; does NOT update the bundled SPA that ships in the Rust binary)
 - `cargo dev build [-- <cargo args>]` — refreshes the embedded SPA assets from the production build, verifies SPA asset budgets, and then runs `cargo build` with forwarded args. The embedded assets are gitignored except for `.gitkeep`; use this when building a Rust binary that should include a populated SPA bundle. `bun run dev` for local development is unchanged because debug builds prefer `apps/fabro-web/dist/` on disk via the server fallback.
@@ -328,3 +328,11 @@ Never run `cargo insta accept` without first checking what's pending — it acce
 - `#[e2e_test(twin, live("VAR"))]` — dual-mode test that runs against twin-openai or real API. `#[e2e_test(twin)]` for twin-only tests (e.g., scripted failures). `#[e2e_test(live("VAR"))]` for live-only tests requiring secrets. `#[e2e_test()]` for sandbox tests with no API deps. Behavior is controlled by `FABRO_TEST_MODE` (`live`, `strict`; default is `twin`), and `cargo nextest run --profile e2e ...` implies `strict`. Use `fabro_test::e2e_openai!()` in twin/dual-mode tests to get `(base_url, api_key)`.
 - Local test HTTP clients must use `.no_proxy()`. Prefer shared helpers like `fabro_test::test_http_client()` or crate-local equivalents instead of `reqwest::Client::new()`, bare `Client::builder().build()`, or `reqwest::get(...)`.
 - This is not cosmetic: macOS proxy discovery adds hidden startup overhead to repeated localhost reqwest clients and can surface as misleading nextest timeouts.
+
+## Cursor Cloud specific instructions
+
+- Rust `1.97.1` is the default toolchain. `cargo fmt` and `cargo clippy` use `nightly-2026-04-14`, the same pin as CI.
+- Bun `1.4.4` is on `/usr/local/bin`. Web tests are `cd apps/fabro-web && bun run test`.
+- Docker is the default sandbox provider (`fabro-environment`'s built-in environment). This VM does not run systemd, so the environment start script runs `dockerd` in the foreground with the `fuse-overlayfs` storage driver and legacy iptables. After boot, `sudo docker info` should succeed.
+- A fresh `fabro server start` with no `settings.toml` serves the install wizard and answers `/health` with `{"status":"ok","mode":"install"}`. Debug builds serve `apps/fabro-web/dist` on disk.
+- Live LLM, GitHub, and Slack credentials are optional for compile, unit tests, and the install wizard. Ignored live e2e tests read `.env` (see `.env.example`).
